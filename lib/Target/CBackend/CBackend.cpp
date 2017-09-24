@@ -636,10 +636,10 @@ bool CWriter::printConstantString(Constant *C, enum OperandContext Context) {
 // TODO copied from CppBackend, new code should use raw_ostream
 static inline std::string ftostr(const APFloat& V) {
   std::string Buf;
-  if (&V.getSemantics() == &APFloat::IEEEdouble) {
+  if (&V.getSemantics() == &APFloat::IEEEdouble()) {
     raw_string_ostream(Buf) << V.convertToDouble();
     return Buf;
-  } else if (&V.getSemantics() == &APFloat::IEEEsingle) {
+  } else if (&V.getSemantics() == &APFloat::IEEEsingle()) {
     raw_string_ostream(Buf) << (double)V.convertToFloat();
     return Buf;
   }
@@ -654,7 +654,7 @@ static bool isFPCSafeToPrint(const ConstantFP *CFP) {
     return false;
   APFloat APF = APFloat(CFP->getValueAPF());  // copy
   if (CFP->getType() == Type::getFloatTy(CFP->getContext()))
-    APF.convert(APFloat::IEEEdouble, APFloat::rmNearestTiesToEven, &ignored);
+    APF.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven, &ignored);
 #if HAVE_PRINTF_A && ENABLE_CBE_PRINTF_A
   char Buffer[100];
   sprintf(Buffer, "%a", APF.convertToDouble());
@@ -979,7 +979,7 @@ void CWriter::printConstant(Constant *CPV, enum OperandContext Context) {
         // useful.
         APFloat Tmp = FPC->getValueAPF();
         bool LosesInfo;
-        Tmp.convert(APFloat::IEEEdouble, APFloat::rmTowardZero, &LosesInfo);
+        Tmp.convert(APFloat::IEEEdouble(), APFloat::rmTowardZero, &LosesInfo);
         V = Tmp.convertToDouble();
       }
 
@@ -1671,6 +1671,12 @@ static void FindStaticTors(GlobalVariable *GV, std::set<Function*> &StaticTors){
         StaticTors.insert(F);
     }
 }
+static void FindStaticTors(GlobalVariable &GV, std::set<Function*> &StaticTors){
+  return FindStaticTors(&GV, StaticTors);
+}
+static void FindStaticTors(Module::global_iterator& I, std::set<Function*> &StaticTors){
+  return FindStaticTors(*I, StaticTors);
+}
 
 enum SpecialGlobalClass {
   NotSpecial = 0,
@@ -1695,6 +1701,12 @@ static SpecialGlobalClass getGlobalVariableClass(GlobalVariable *GV) {
     return NotPrinted;
 
   return NotSpecial;
+}
+static SpecialGlobalClass getGlobalVariableClass(GlobalVariable &GV) {
+  return getGlobalVariableClass(&GV);
+}
+static SpecialGlobalClass getGlobalVariableClass(Module::global_iterator& I) {
+  return getGlobalVariableClass(*I);
 }
 
 // PrintEscapedString - Print each character of the specified string, escaping
@@ -1903,7 +1915,7 @@ void CWriter::generateHeader(Module &M) {
   Out << "\n/* Function Declarations */\n";
 
   // Store the intrinsics which will be declared/defined below.
-  SmallVector<Function*, 16> intrinsicsToDefine;
+  SmallVector<Module::iterator, 16> intrinsicsToDefine;
 
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
     // Don't print declarations for intrinsic functions.
@@ -1976,9 +1988,9 @@ void CWriter::generateHeader(Module &M) {
       Out << " __ATTRIBUTE_WEAK__";
     if (I->hasExternalWeakLinkage())
       Out << " __EXTERNAL_WEAK__";
-    if (StaticCtors.count(I))
+    if (StaticCtors.count(&I.operator*()))
       Out << " __ATTRIBUTE_CTOR__";
-    if (StaticDtors.count(I))
+    if (StaticDtors.count(&I.operator*()))
       Out << " __ATTRIBUTE_DTOR__";
     if (I->hasHiddenVisibility())
       Out << " __HIDDEN__";
@@ -2567,7 +2579,7 @@ void CWriter::generateHeader(Module &M) {
   }
 
   // Emit definitions of the intrinsics.
-  for (SmallVector<Function*, 16>::iterator
+  for (SmallVector<Module::iterator, 16>::iterator
        I = intrinsicsToDefine.begin(),
        E = intrinsicsToDefine.end(); I != E; ++I) {
     printIntrinsicDefinition(**I, Out);
@@ -2914,11 +2926,12 @@ void CWriter::printFunction(Function &F) {
 
   // print the basic blocks
   for (Function::iterator BB = F.begin(), E = F.end(); BB != E; ++BB) {
-    if (Loop *L = LI->getLoopFor(BB)) {
-      if (L->getHeader() == BB && L->getParentLoop() == 0)
+    auto* BBPtr = &BB.operator*();
+    if (Loop *L = LI->getLoopFor(BBPtr)) {
+      if (L->getHeader() == BBPtr && L->getParentLoop() == 0)
         printLoop(L);
     } else {
-      printBasicBlock(BB);
+      printBasicBlock(BBPtr);
     }
   }
 
@@ -2959,7 +2972,7 @@ void CWriter::printBasicBlock(BasicBlock *BB) {
   // Output all of the instructions in the basic block...
   for (BasicBlock::iterator II = BB->begin(), E = --BB->end(); II != E;
        ++II) {
-    if (!isInlinableInst(*II) && !isDirectAlloca(II)) {
+    if (!isInlinableInst(*II) && !isDirectAlloca(*II)) {
       if (!isEmptyType(II->getType()) &&
           !isInlineAsm(*II))
         outputLValue(II);
@@ -2991,7 +3004,7 @@ void CWriter::visitReturnInst(ReturnInst &I) {
   // unless that would make the basic block empty
   if (I.getNumOperands() == 0 &&
       &*--I.getParent()->getParent()->end() == I.getParent() &&
-      I.getParent()->begin() != I) {
+      &*I.getParent()->begin() != &I) {
     return;
   }
 
@@ -3759,12 +3772,12 @@ void CWriter::lowerIntrinsics(Function &F) {
             break;
           default:
             // All other intrinsic calls we must lower.
-            Instruction *Before = 0;
+            BasicBlock::iterator Before = BB->end();
             if (CI != &BB->front())
               Before = std::prev(BasicBlock::iterator(CI));
 
             IL->LowerIntrinsicCall(CI);
-            if (Before) {        // Move iterator to instruction after call
+            if (Before != BB->end()) {        // Move iterator to instruction after call
               I = Before; ++I;
             } else {
               I = BB->begin();
@@ -4263,7 +4276,7 @@ void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
   VectorType *LastIndexIsVector = 0;
   {
     for (gep_type_iterator TmpI = I; TmpI != E; ++TmpI)
-      LastIndexIsVector = dyn_cast<VectorType>(*TmpI);
+      LastIndexIsVector = dyn_cast<VectorType>(TmpI.getStructType());
   }
 
   Out << "(";
@@ -4293,7 +4306,7 @@ void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
     // exposed, like a global, avoid emitting (&foo)[0], just emit foo instead.
     if (isAddressExposed(Ptr)) {
       writeOperandInternal(Ptr);
-    } else if (I != E && (*I)->isStructTy()) {
+    } else if (I != E && I.isStruct()) {
       // If we didn't already emit the first operand, see if we can print it as
       // P->f instead of "P[0].f"
       writeOperand(Ptr);
@@ -4309,13 +4322,13 @@ void CWriter::printGEPExpression(Value *Ptr, gep_type_iterator I,
 
   for (; I != E; ++I) {
     assert(I.getOperand()->getType()->isIntegerTy()); // TODO: indexing a Vector with a Vector is valid, but we don't support it here
-    if ((*I)->isStructTy()) {
+    if (I.isStruct()) {
       Out << ".field" << cast<ConstantInt>(I.getOperand())->getZExtValue();
-    } else if ((*I)->isArrayTy()) {
+    } else if ((I.getStructType())->isArrayTy()) {
       Out << ".array[";
       writeOperandWithCast(I.getOperand(), Instruction::GetElementPtr);
       Out << ']';
-    } else if (!(*I)->isVectorTy()) {
+    } else if (!(I.getStructType())->isVectorTy()) {
       Out << '[';
       writeOperandWithCast(I.getOperand(), Instruction::GetElementPtr);
       Out << ']';
@@ -4537,7 +4550,7 @@ void CWriter::visitExtractValueInst(ExtractValueInst &EVI) {
 bool CTargetMachine::addPassesToEmitFile(
     PassManagerBase &PM, raw_pwrite_stream &Out, CodeGenFileType FileType,
     bool DisableVerify, AnalysisID StartBefore,
-    AnalysisID StartAfter, AnalysisID StopAfter,
+    AnalysisID StartAfter, AnalysisID StopBefore, AnalysisID StopAfter,
     MachineFunctionInitializer *MFInitializer) {
 
   if (FileType != TargetMachine::CGFT_AssemblyFile) return true;

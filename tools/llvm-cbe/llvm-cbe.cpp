@@ -160,16 +160,18 @@ static tool_output_file *GetOutputStream(const char *TargetName,
   return FDOut;
 }
 
+
+static LLVMContext llvmContext;
 // main - Entry point for the llc compiler.
 //
 int main(int argc, char **argv) {
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(StringRef());
   PrettyStackTraceProgram X(argc, argv);
 
   // Enable debug stream buffering.
   EnableDebugBuffering = true;
 
-  LLVMContext &Context = getGlobalContext();
+  LLVMContext &Context = llvmContext;
   llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
 
   // Initialize targets first, so that --version shows registered targets.
@@ -189,7 +191,7 @@ int main(int argc, char **argv) {
   initializeCodeGen(*Registry);
   initializeLoopStrengthReducePass(*Registry);
   initializeLowerIntrinsicsPass(*Registry);
-  initializeUnreachableBlockElimPass(*Registry);
+  initializeUnreachableBlockElimLegacyPassPass(*Registry);
 
   // Register the target printer for --version.
   cl::AddExtraVersionPrinter(TargetRegistry::printRegisteredTargetsForVersion);
@@ -282,14 +284,15 @@ static int compileModule(char **argv, LLVMContext &Context) {
   Options.NoZerosInBSS = DontPlaceZerosInBSS;
   Options.GuaranteedTailCallOpt = EnableGuaranteedTailCallOpt;
   Options.StackAlignmentOverride = OverrideStackAlignment;
-  Options.PositionIndependentExecutable = EnablePIE;
+  //Options.PositionIndependentExecutable = EnablePIE;
   
+
   //Jackson Korba 9/30/14
   //OwningPtr<targetMachine>
   std::unique_ptr<TargetMachine>
     target(TheTarget->createTargetMachine(TheTriple.getTriple(),
-                                          MCPU, FeaturesStr, Options,
-                                          RelocModel, CMModel, OLvl));
+                                          MCPU.getValue(), FeaturesStr, Options,
+                                          RelocModel.getValue(), CMModel.getValue(), OLvl));
   assert(target.get() && "Could not allocate target machine!");
   assert(mod && "Should have exited after outputting help!");
   TargetMachine &Target = *target.get();
@@ -327,24 +330,25 @@ static int compileModule(char **argv, LLVMContext &Context) {
   {
     AnalysisID StartAfterID = 0;
     AnalysisID StopAfterID = 0;
+    /*
     const PassRegistry *PR = PassRegistry::getPassRegistry();
-    if (!StartAfter.empty()) {
-      const PassInfo *PI = PR->getPassInfo(StartAfter);
+    if (StartAfterOpt.getNumOccurrences() != 0) {
+      const PassInfo *PI = PR->getPassInfo(StartAfterOpt.getValue());
       if (!PI) {
         errs() << argv[0] << ": start-after pass is not registered.\n";
         return 1;
       }
       StartAfterID = PI->getTypeInfo();
     }
-    if (!StopAfter.empty()) {
-      const PassInfo *PI = PR->getPassInfo(StopAfter);
+    if (StopAfterOpt.getNumOccurrences() != 0) {
+      const PassInfo *PI = PR->getPassInfo(StopAfterOpt.getValue());
       if (!PI) {
         errs() << argv[0] << ": stop-after pass is not registered.\n";
         return 1;
       }
       StopAfterID = PI->getTypeInfo();
     }
-
+    */
     // Ask the target to add backend passes as necessary.
     if (Target.addPassesToEmitFile(PM, Out->os(), FileType, NoVerify,
                                    StartAfterID, StopAfterID)) {
